@@ -1,30 +1,27 @@
-name: Windows RDP + Tailscale
+name: DapaX Windows RDP
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: rdp-session
+  group: dapax-rdp
   cancel-in-progress: false
 
 jobs:
   rdp:
-    # x64 lebih cocok untuk emulator Android daripada ARM
     runs-on: windows-latest
-
-    # GitHub-hosted runner bersifat sementara
     timeout-minutes: 350
 
     steps:
 
-      # =========================================
-      # 1. SYSTEM INFO
-      # =========================================
+      # ==========================================
+      # SYSTEM INFO
+      # ==========================================
       - name: System Information
         shell: pwsh
         run: |
           Write-Host "=========================================="
-          Write-Host "        WINDOWS RDP + TAILSCALE"
+          Write-Host "             DAPAX WINDOWS RDP"
           Write-Host "=========================================="
 
           $os = Get-CimInstance Win32_OperatingSystem
@@ -32,28 +29,118 @@ jobs:
           $cs = Get-CimInstance Win32_ComputerSystem
           $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
 
-          Write-Host "OS     : $($os.Caption)"
-          Write-Host "Build  : $($os.BuildNumber)"
-          Write-Host "CPU    : $($cpu.Name)"
-          Write-Host "Core   : $($cpu.NumberOfCores)"
-          Write-Host "Thread : $($cpu.NumberOfLogicalProcessors)"
-          Write-Host "RAM    : $([math]::Round($cs.TotalPhysicalMemory / 1GB,2)) GB"
-          Write-Host "Disk   : $([math]::Round($disk.FreeSpace / 1GB,2)) GB free"
+          Write-Host "OS   : $($os.Caption)"
+          Write-Host "CPU  : $($cpu.Name)"
+          Write-Host "Core : $($cpu.NumberOfCores)"
+          Write-Host "RAM  : $([math]::Round($cs.TotalPhysicalMemory / 1GB,2)) GB"
+          Write-Host "Disk : $([math]::Round($disk.FreeSpace / 1GB,2)) GB free"
 
           Get-CimInstance Win32_VideoController |
             ForEach-Object {
-              Write-Host "GPU    : $($_.Name)"
+              Write-Host "GPU  : $($_.Name)"
             }
 
           Write-Host "=========================================="
 
-      # =========================================
-      # 2. ENABLE RDP
-      # =========================================
+      # ==========================================
+      # GENERATE RANDOM PASSWORD
+      # ==========================================
+      - name: Generate DapaX Password
+        id: password
+        shell: pwsh
+        run: |
+
+          $upper  = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+          $lower  = "abcdefghijkmnopqrstuvwxyz"
+          $number = "23456789"
+          $symbol = "!@#$%"
+
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+
+          function Get-RandomChar($chars) {
+              $bytes = New-Object byte[] 4
+              $rng.GetBytes($bytes)
+              $index = [BitConverter]::ToUInt32($bytes,0) % $chars.Length
+              return $chars[$index]
+          }
+
+          # Pastikan memenuhi kompleksitas password Windows
+          $chars = @(
+              Get-RandomChar $upper
+              Get-RandomChar $lower
+              Get-RandomChar $number
+              Get-RandomChar $symbol
+          )
+
+          $all = $upper + $lower + $number + $symbol
+
+          for ($i = 0; $i -lt 16; $i++) {
+              $chars += Get-RandomChar $all
+          }
+
+          # Shuffle
+          $password = ($chars | Sort-Object { Get-Random }) -join ""
+
+          $rng.Dispose()
+
+          # Simpan untuk step berikutnya
+          "DAPAX_PASSWORD=$password" >> $env:GITHUB_ENV
+
+          # Output biasa
+          "password=$password" >> $env:GITHUB_OUTPUT
+
+          # Tampilkan di log
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "          DAPAX RDP PASSWORD"
+          Write-Host "=========================================="
+          Write-Host "PASSWORD : $password"
+          Write-Host "=========================================="
+
+          # Tampilkan juga di GitHub Summary
+          @"
+          # 🔐 DapaX RDP Credentials
+
+          | Item | Value |
+          |---|---|
+          | Computer Name | DapaX |
+          | Username | DapaX |
+          | Password | `$password` |
+          | RDP Port | 3389 |
+
+          **Windows App**
+          
+          Gunakan IP Tailscale yang muncul pada step berikutnya.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      # ==========================================
+      # RENAME COMPUTER
+      # ==========================================
+      - name: Rename Windows to DapaX
+        shell: pwsh
+        run: |
+          Write-Host "Renaming Windows computer to DapaX..."
+
+          try {
+              Rename-Computer `
+                -NewName "DapaX" `
+                -Force `
+                -ErrorAction Stop
+
+              Write-Host "Computer name configured: DapaX"
+              Write-Host "Note: full hostname change may require reboot."
+          }
+          catch {
+              Write-Host "Hostname rename warning:"
+              Write-Host $_
+          }
+
+      # ==========================================
+      # ENABLE RDP
+      # ==========================================
       - name: Enable Remote Desktop
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
 
           Write-Host "Enabling Remote Desktop..."
 
@@ -81,110 +168,82 @@ jobs:
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          Write-Host "RDP enabled successfully."
+          Write-Host "RDP enabled."
 
-      # =========================================
-      # 3. CREATE RDP USER
-      # =========================================
-      - name: Create RDP User
+      # ==========================================
+      # CREATE DAPAX USER
+      # ==========================================
+      - name: Create DapaX RDP User
         shell: pwsh
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          $ErrorActionPreference = "Stop"
 
-          $username = "rdpadmin"
+          $username = "DapaX"
 
-          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-            Write-Error "Secret RDP_PASSWORD belum dibuat."
-            exit 1
-          }
+          Write-Host "Creating user: DapaX"
 
-          Write-Host "Creating RDP user..."
+          $securePassword = ConvertTo-SecureString `
+            "$env:DAPAX_PASSWORD" `
+            -AsPlainText `
+            -Force
 
           $existing = Get-LocalUser `
             -Name $username `
             -ErrorAction SilentlyContinue
 
           if ($existing) {
-            Write-Host "User already exists. Updating password..."
 
-            $securePassword = ConvertTo-SecureString `
-              $env:RDP_PASSWORD `
-              -AsPlainText `
-              -Force
+              Write-Host "DapaX already exists."
+              Write-Host "Updating password..."
 
-            Set-LocalUser `
-              -Name $username `
-              -Password $securePassword
+              Set-LocalUser `
+                -Name $username `
+                -Password $securePassword
 
-            Enable-LocalUser `
-              -Name $username
+              Enable-LocalUser `
+                -Name $username
           }
           else {
-            $securePassword = ConvertTo-SecureString `
-              $env:RDP_PASSWORD `
-              -AsPlainText `
-              -Force
 
-            New-LocalUser `
-              -Name $username `
-              -Password $securePassword `
-              -AccountNeverExpires `
-              -PasswordNeverExpires `
-              -UserMayNotChangePassword `
-              -ErrorAction Stop | Out-Null
+              New-LocalUser `
+                -Name $username `
+                -Password $securePassword `
+                -AccountNeverExpires `
+                -PasswordNeverExpires `
+                -UserMayNotChangePassword `
+                -Description "DapaX RDP Account"
 
-            Enable-LocalUser `
-              -Name $username
+              Write-Host "DapaX user created."
           }
 
           # Administrator
-          $adminMembers = Get-LocalGroupMember `
+          Add-LocalGroupMember `
             -Group "Administrators" `
+            -Member "DapaX" `
             -ErrorAction SilentlyContinue
-
-          if (-not ($adminMembers.Name -match "\\$username$")) {
-            Add-LocalGroupMember `
-              -Group "Administrators" `
-              -Member $username `
-              -ErrorAction Stop
-          }
 
           # Remote Desktop Users
-          $rdpMembers = Get-LocalGroupMember `
+          Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
+            -Member "DapaX" `
             -ErrorAction SilentlyContinue
 
-          if (-not ($rdpMembers.Name -match "\\$username$")) {
-            Add-LocalGroupMember `
-              -Group "Remote Desktop Users" `
-              -Member $username `
-              -ErrorAction Stop
-          }
+          $user = Get-LocalUser `
+            -Name "DapaX"
 
-          $check = Get-LocalUser `
-            -Name $username `
-            -ErrorAction Stop
-
-          if (-not $check.Enabled) {
-            Write-Error "RDP user tidak aktif."
-            exit 1
-          }
-
+          Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP USER READY"
-          Write-Host "Username : rdpadmin"
-          Write-Host "Password : configured from GitHub Secret"
+          Write-Host "           DAPAX USER READY"
+          Write-Host "=========================================="
+          Write-Host "Username : DapaX"
+          Write-Host "Enabled  : $($user.Enabled)"
           Write-Host "=========================================="
 
-      # =========================================
-      # 4. INSTALL TAILSCALE
-      # =========================================
+      # ==========================================
+      # INSTALL TAILSCALE
+      # ==========================================
       - name: Install Tailscale
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
 
           $installer = "$env:TEMP\tailscale.msi"
 
@@ -196,88 +255,81 @@ jobs:
 
           Write-Host "Installing Tailscale..."
 
-          $p = Start-Process `
+          $process = Start-Process `
             -FilePath "msiexec.exe" `
             -ArgumentList "/i `"$installer`" /qn /norestart" `
             -Wait `
             -PassThru
 
-          if ($p.ExitCode -ne 0) {
-            Write-Error "Tailscale installation failed: $($p.ExitCode)"
-            exit $p.ExitCode
+          if ($process.ExitCode -ne 0) {
+              Write-Error "Tailscale installation failed."
+              exit $process.ExitCode
           }
 
-          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
-
-          if (-not (Test-Path $tailscale)) {
-            Write-Error "tailscale.exe tidak ditemukan."
-            exit 1
+          if (-not (Test-Path "C:\Program Files\Tailscale\tailscale.exe")) {
+              Write-Error "tailscale.exe tidak ditemukan."
+              exit 1
           }
 
-          Write-Host "Tailscale installed successfully."
+          Write-Host "Tailscale installed."
 
-      # =========================================
-      # 5. CONNECT TAILSCALE
-      # =========================================
+      # ==========================================
+      # CONNECT TAILSCALE
+      # ==========================================
       - name: Connect Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          $ErrorActionPreference = "Stop"
 
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            Write-Error "Secret TAILSCALE_AUTH_KEY belum dibuat."
-            exit 1
+              Write-Error "TAILSCALE_AUTH_KEY belum dibuat di Repository Secrets."
+              exit 1
           }
 
           $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
-          Write-Host "Connecting to Tailscale..."
+          Write-Host "Connecting Tailscale..."
 
           & $tailscale up `
             --auth-key="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="github-rdp-$env:GITHUB_RUN_ID" `
+            --hostname="dapax-rdp-$env:GITHUB_RUN_ID" `
             --accept-dns=false
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Tailscale gagal terhubung."
-            exit $LASTEXITCODE
+              Write-Error "Tailscale gagal terhubung."
+              exit $LASTEXITCODE
           }
 
           Start-Sleep -Seconds 5
 
           Write-Host "Tailscale connected."
 
-      # =========================================
-      # 6. FIREWALL
-      # =========================================
-      - name: Configure RDP Firewall
+      # ==========================================
+      # FIREWALL
+      # ==========================================
+      - name: Configure Tailscale RDP Firewall
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "Configuring firewall..."
 
           netsh advfirewall firewall delete rule `
-            name="RDP-Tailscale" 2>$null
+            name="DapaX-RDP-Tailscale" 2>$null
 
           netsh advfirewall firewall add rule `
-            name="RDP-Tailscale" `
+            name="DapaX-RDP-Tailscale" `
             dir=in `
             action=allow `
             protocol=TCP `
             localport=3389
 
-          Write-Host "Firewall configured."
+          Write-Host "Firewall rule created."
 
-      # =========================================
-      # 7. GET TAILSCALE IP
-      # =========================================
-      - name: Get Tailscale IP
+      # ==========================================
+      # GET TAILSCALE IP
+      # ==========================================
+      - name: Get DapaX RDP Address
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
 
           $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
@@ -289,32 +341,60 @@ jobs:
           $ip = $ip.ToString().Trim()
 
           if ([string]::IsNullOrWhiteSpace($ip)) {
-            Write-Error "Tailscale IPv4 tidak ditemukan."
-            exit 1
+              Write-Error "Tailscale IP tidak ditemukan."
+              exit 1
           }
 
-          "TAILSCALE_IP=$ip" |
-            Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
 
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "          RDP CONNECTION"
+          Write-Host "          DAPAX RDP READY"
           Write-Host "=========================================="
-          Write-Host "PC Name  : $ip"
-          Write-Host "Port     : 3389"
-          Write-Host "Username : rdpadmin"
-          Write-Host "Password : RDP_PASSWORD secret"
+          Write-Host "PC NAME : $ip"
+          Write-Host "USER    : DapaX"
+          Write-Host "PASSWORD: $env:DAPAX_PASSWORD"
+          Write-Host "PORT    : 3389"
           Write-Host "=========================================="
 
-      # =========================================
-      # 8. VERIFY RDP
-      # =========================================
+          @"
+
+          # 🖥️ DapaX RDP READY
+
+          ## Connection
+
+          **PC Name / Address**
+          `$ip`
+
+          **Username**
+          `DapaX`
+
+          **Password**
+          `$env:DAPAX_PASSWORD`
+
+          **Port**
+          `3389`
+
+          ## Windows App
+
+          Masukkan:
+
+          - PC name: `$ip`
+          - Username: `DapaX`
+          - Password: `$env:DAPAX_PASSWORD`
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append
+
+      # ==========================================
+      # VERIFY RDP
+      # ==========================================
       - name: Verify RDP
         shell: pwsh
         run: |
-          Write-Host "Checking RDP port..."
+
+          Write-Host "Testing local RDP port..."
 
           Start-Sleep -Seconds 3
 
@@ -324,35 +404,40 @@ jobs:
             -WarningAction SilentlyContinue
 
           if ($test.TcpTestSucceeded) {
-            Write-Host "=========================================="
-            Write-Host "RDP PORT 3389 : OK"
-            Write-Host "TAILSCALE IP   : $env:TAILSCALE_IP"
-            Write-Host "=========================================="
+
+              Write-Host ""
+              Write-Host "=========================================="
+              Write-Host "       RDP PORT 3389 : ONLINE"
+              Write-Host "       DAPAX RDP     : READY"
+              Write-Host "=========================================="
           }
           else {
-            Write-Error "RDP port 3389 tidak terbuka."
-            exit 1
+
+              Write-Error "RDP port 3389 tidak terbuka."
+              exit 1
           }
 
-      # =========================================
-      # 9. KEEP ALIVE
-      # =========================================
-      - name: Keep RDP Alive
+      # ==========================================
+      # KEEP ALIVE
+      # ==========================================
+      - name: Keep DapaX RDP Alive
         shell: pwsh
         run: |
+
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "       WINDOWS RDP IS READY"
+          Write-Host "          DAPAX RDP ACTIVE"
           Write-Host "=========================================="
-          Write-Host "PC Name  : $env:TAILSCALE_IP"
-          Write-Host "Username : rdpadmin"
-          Write-Host "Port     : 3389"
+          Write-Host "IP       : $env:TAILSCALE_IP"
+          Write-Host "Username : DapaX"
+          Write-Host "Password : $env:DAPAX_PASSWORD"
           Write-Host ""
-          Write-Host "Gunakan Windows App untuk terhubung."
-          Write-Host "Jangan tekan Cancel pada workflow."
+          Write-Host "JANGAN CANCEL WORKFLOW."
           Write-Host "=========================================="
 
           while ($true) {
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP ACTIVE"
-            Start-Sleep -Seconds 60
+
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] DapaX RDP ACTIVE"
+
+              Start-Sleep -Seconds 60
           }
