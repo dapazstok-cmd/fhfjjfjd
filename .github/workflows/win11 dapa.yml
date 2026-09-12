@@ -41,16 +41,16 @@ jobs:
           $number = RandomNumber
           $computerName = "DapaX$number"
 
-          # Password total 8 karakter:
+          # Password total 8 karakter
           # DapaX + 3 karakter
           $upper  = "ABCDEFGHJKLMNPQRSTUVWXYZ"
           $lower  = "abcdefghijkmnopqrstuvwxyz"
           $digits = "23456789"
 
           $passwordChars = @(
-              RandomChar $upper
-              RandomChar $lower
-              RandomChar $digits
+              (RandomChar $upper)
+              (RandomChar $lower)
+              (RandomChar $digits)
           )
 
           $password = "DapaX" + ($passwordChars -join "")
@@ -71,13 +71,13 @@ jobs:
           Write-Host "=========================================="
 
           @"
-          # 🔐 DapaX RDP Credentials
+          # DapaX RDP Credentials
 
           | Item | Value |
           |---|---|
-          | Computer Name | `$computerName` |
-          | Username | `$computerName` |
-          | Password | `$password` |
+          | Computer Name | $computerName |
+          | Username | $computerName |
+          | Password | $password |
           | RDP Port | 3389 |
 
           "@ | Out-File `
@@ -105,6 +105,7 @@ jobs:
           Write-Host "OS       : $($os.Caption)"
           Write-Host "CPU      : $($cpu.Name)"
           Write-Host "Core     : $($cpu.NumberOfCores)"
+          Write-Host "Threads  : $($cpu.NumberOfLogicalProcessors)"
           Write-Host "RAM      : $([math]::Round($cs.TotalPhysicalMemory / 1GB,2)) GB"
           Write-Host "Disk     : $([math]::Round($disk.FreeSpace / 1GB,2)) GB free"
 
@@ -117,7 +118,7 @@ jobs:
 
 
       # ==========================================
-      # RENAME WINDOWS
+      # RENAME WINDOWS COMPUTER
       # ==========================================
       - name: Rename Windows Computer
         shell: pwsh
@@ -132,8 +133,7 @@ jobs:
                 -Force `
                 -ErrorAction Stop
 
-              Write-Host "Computer name:"
-              Write-Host "$env:DAPAX_COMPUTER_NAME"
+              Write-Host "Computer rename command completed."
 
           }
           catch {
@@ -152,14 +152,23 @@ jobs:
 
           Write-Host "Checking Windows Test Mode..."
 
-          bcdedit /set testsigning off
-          bcdedit /set nointegritychecks off
+          try {
+              bcdedit /set testsigning off
+          }
+          catch {
+              Write-Host "testsigning setting warning."
+          }
 
-          Write-Host "Test Mode configuration disabled."
+          try {
+              bcdedit /set nointegritychecks off
+          }
+          catch {
+              Write-Host "nointegritychecks setting warning."
+          }
 
+          Write-Host "Test Mode configuration checked."
           Write-Host ""
-          Write-Host "NOTE:"
-          Write-Host "Watermark may require a Windows restart to disappear."
+          Write-Host "NOTE: watermark may require restart."
 
 
       # ==========================================
@@ -244,13 +253,11 @@ jobs:
               Write-Host "User created."
           }
 
-          # Administrator
           Add-LocalGroupMember `
             -Group "Administrators" `
             -Member "$username" `
             -ErrorAction SilentlyContinue
 
-          # Remote Desktop Users
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
             -Member "$username" `
@@ -270,6 +277,7 @@ jobs:
       # ==========================================
       - name: Install BlueStacks
         shell: pwsh
+        continue-on-error: true
         run: |
 
           Write-Host "=========================================="
@@ -280,55 +288,71 @@ jobs:
 
           try {
 
-              Write-Host "Downloading BlueStacks..."
+              Write-Host "Opening official BlueStacks download page..."
 
-              Invoke-WebRequest `
+              $response = Invoke-WebRequest `
                 -Uri "https://www.bluestacks.com/download.html" `
-                -OutFile "$env:TEMP\bluestacks.html" `
                 -UseBasicParsing
 
-              $html = Get-Content `
-                "$env:TEMP\bluestacks.html" `
-                -Raw
+              $html = $response.Content
+
+              # Regex menggunakan double quote agar tidak
+              # bentrok dengan karakter apostrophe.
+              $pattern = "https?[^`"']+\.exe"
 
               $matches = [regex]::Matches(
-                $html,
-                'https?[^"\']+\.exe'
+                  $html,
+                  $pattern
               )
 
               $downloadUrl = $null
 
               foreach ($match in $matches) {
 
-                  if ($match.Value -match "BlueStacks") {
-                      $downloadUrl = $match.Value
+                  $url = $match.Value
+
+                  if ($url -match "bluestacks") {
+                      $downloadUrl = $url
                       break
                   }
               }
 
-              if ($downloadUrl) {
+              if (-not $downloadUrl) {
 
-                  Write-Host "Downloading installer..."
+                  Write-Host "Installer BlueStacks tidak ditemukan."
+                  Write-Host "BlueStacks dilewati."
+                  exit 0
+              }
 
-                  Invoke-WebRequest `
-                    -Uri $downloadUrl `
-                    -OutFile $installer `
-                    -UseBasicParsing
+              Write-Host "Installer ditemukan."
+              Write-Host "Downloading BlueStacks..."
 
-                  Write-Host "Starting BlueStacks installer..."
+              Invoke-WebRequest `
+                -Uri $downloadUrl `
+                -OutFile $installer `
+                -UseBasicParsing
 
-                  Start-Process `
-                    -FilePath $installer `
-                    -ArgumentList "-s" `
-                    -Wait
+              if (-not (Test-Path $installer)) {
 
+                  Write-Host "Installer tidak berhasil didownload."
+                  exit 0
+              }
+
+              Write-Host "Starting BlueStacks installer..."
+
+              $process = Start-Process `
+                -FilePath $installer `
+                -ArgumentList "-s" `
+                -Wait `
+                -PassThru
+
+              Write-Host "BlueStacks exit code: $($process.ExitCode)"
+
+              if ($process.ExitCode -eq 0) {
                   Write-Host "BlueStacks installation finished."
-
               }
               else {
-
-                  Write-Host "BlueStacks installer URL tidak ditemukan."
-                  Write-Host "Skipping BlueStacks installation."
+                  Write-Host "BlueStacks installer selesai dengan warning."
               }
 
           }
@@ -336,6 +360,7 @@ jobs:
 
               Write-Host "BlueStacks installation failed:"
               Write-Host $_
+              Write-Host "Melanjutkan workflow..."
           }
 
 
@@ -344,6 +369,7 @@ jobs:
       # ==========================================
       - name: Install Discord
         shell: pwsh
+        continue-on-error: true
         run: |
 
           Write-Host "=========================================="
@@ -356,25 +382,56 @@ jobs:
 
               Write-Host "Downloading Discord..."
 
+              $downloadUrl = "https://discord.com/api/download?platform=win"
+
               Invoke-WebRequest `
-                -Uri "https://discord.com/api/download?platform=win" `
+                -Uri $downloadUrl `
                 -OutFile $installer `
                 -UseBasicParsing
 
-              Write-Host "Installing Discord..."
+              if (-not (Test-Path $installer)) {
 
-              Start-Process `
+                  Write-Host "Discord installer tidak ditemukan."
+                  exit 0
+              }
+
+              $size = (Get-Item $installer).Length
+
+              Write-Host "Installer size: $size bytes"
+
+              if ($size -lt 100000) {
+
+                  Write-Host "File Discord terlalu kecil."
+                  Write-Host "Download kemungkinan gagal."
+                  exit 0
+              }
+
+              Write-Host "Starting Discord installer..."
+
+              $process = Start-Process `
                 -FilePath $installer `
                 -ArgumentList "-s" `
-                -Wait
+                -Wait `
+                -PassThru
 
-              Write-Host "Discord installation completed."
+              Write-Host "Discord exit code: $($process.ExitCode)"
+
+              if ($process.ExitCode -eq 0) {
+
+                  Write-Host "Discord installation completed."
+
+              }
+              else {
+
+                  Write-Host "Discord installer selesai dengan warning."
+              }
 
           }
           catch {
 
               Write-Host "Discord installation failed:"
               Write-Host $_
+              Write-Host "Melanjutkan workflow..."
           }
 
 
@@ -391,7 +448,8 @@ jobs:
 
           Invoke-WebRequest `
             -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
-            -OutFile $installer
+            -OutFile $installer `
+            -UseBasicParsing
 
           Write-Host "Installing Tailscale..."
 
@@ -509,29 +567,29 @@ jobs:
 
           @"
 
-          # 🖥️ DapaX RDP READY
+          # DapaX RDP READY
 
           ## Connection
 
           **PC Name / Address**
 
-          `$ip`
+          $ip
 
           **Windows Name**
 
-          `$env:DAPAX_COMPUTER_NAME`
+          $env:DAPAX_COMPUTER_NAME
 
           **Username**
 
-          `$env:DAPAX_USERNAME`
+          $env:DAPAX_USERNAME
 
           **Password**
 
-          `$env:DAPAX_PASSWORD`
+          $env:DAPAX_PASSWORD
 
           **Port**
 
-          `3389`
+          3389
 
           ## Installed Apps
 
@@ -543,13 +601,13 @@ jobs:
           ## Windows App
 
           PC name:
-          `$ip`
+          $ip
 
           Username:
-          `$env:DAPAX_USERNAME`
+          $env:DAPAX_USERNAME
 
           Password:
-          `$env:DAPAX_PASSWORD`
+          $env:DAPAX_PASSWORD
 
           "@ | Out-File `
             -FilePath $env:GITHUB_STEP_SUMMARY `
